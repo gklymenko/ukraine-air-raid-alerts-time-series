@@ -44,11 +44,17 @@ ALWAYS_ON_HOURS_THRESHOLD: float = 12.0
 FOCAL_OBLAST: str = "Kyiv City"
 
 # ---------------------------------------------------------------------------
-# 2025 structural-break note
+# Source-aggregation change marker (December 2025)
+# Single source of truth — import this everywhere a date is needed for the marker.
 # ---------------------------------------------------------------------------
+import pandas as pd  # noqa: E402 (imported here so config stays self-contained)
+
+SOURCE_AGGREGATION_CHANGE: pd.Timestamp = pd.Timestamp("2025-12-01", tz="UTC")
+
 BREAK_NOTE_2025: str = (
-    "NOTE: Around early 2025 some regions transitioned to district-level alert "
-    "aggregation and aggregators changed their methodology. This creates an apparent "
-    "structural break in the oblast-level series that does NOT reflect a real change "
-    "in underlying threat activity. Treat any sharp 2025 level-shift with caution."
+    "Around December 2025 the official source's aggregation changed: district "
+    "(raion/hromada) alerts became the dominant recording unit nationwide (phased in "
+    "from spring 2025). This project analyses the level=='oblast' subset, which stays "
+    "continuous across the change — the marker is shown for context, not because a "
+    "discontinuity was observed in the oblast series."
 )

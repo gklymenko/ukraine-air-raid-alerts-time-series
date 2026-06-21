@@ -3,7 +3,6 @@
 Any new model (SARIMA, Prophet, LightGBM…) is a Forecaster subclass that
 implements fit() and predict() — nothing else needs to change in the pipeline.
 
-TODO (Phase 3): Implement concrete subclasses in baselines.py.
 """
 
 from __future__ import annotations

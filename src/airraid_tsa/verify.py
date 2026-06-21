@@ -28,6 +28,7 @@ from airraid_tsa.config import (
     BREAK_NOTE_2025,
     FOCAL_OBLAST,
     FRESHNESS_WARN_DAYS,
+    SOURCE_AGGREGATION_CHANGE,
 )
 
 
@@ -322,28 +323,31 @@ def _check_cross_source(
             .to_string(float_format="%.1f")
         )
 
-    # Post-Dec-2025 continuity check for official source.
-    cutoff = pd.Period("2025-12", freq="M")
-    recent_official = off_counts[off_counts.index > cutoff]
-    if off_counts.index.max() <= cutoff:
+    # Post-aggregation-change continuity check for official source.
+    change_period = SOURCE_AGGREGATION_CHANGE.to_period("M")
+    recent_official = off_counts[off_counts.index > change_period]
+    change_label = SOURCE_AGGREGATION_CHANGE.strftime("%b %Y")
+    if off_counts.index.max() <= change_period:
         print(
             f"\n  INFO: Official-oblast data ends at {off_counts.index.max()} — "
-            "no post-Dec-2025 months to check."
+            f"no post-{change_label} months to check."
         )
     elif recent_official.empty or recent_official.sum() == 0:
         print(
-            f"\n  WARNING: Official-oblast events for '{region}' thin out after Dec-2025 "
-            "— check whether the level filter is excluding post-transition rows."
+            f"\n  WARNING: Official-oblast events for '{region}' thin out after "
+            f"{change_label} — check whether the level filter is excluding "
+            "post-transition rows."
         )
     else:
         n_recent = len(recent_official)
         print(
-            f"\n  [OK] Official-oblast rows continue after Dec-2025 "
+            f"\n  [OK] Official-oblast rows continue after {change_label} "
             f"({n_recent} month(s) present for '{region}')."
         )
 
 
 def _print_break_note() -> None:
-    """Print the 2025 structural-break advisory."""
-    print(f"\n[2025 STRUCTURAL BREAK NOTE]")
+    """Print the source-aggregation-change advisory."""
+    change_label = SOURCE_AGGREGATION_CHANGE.strftime("%b %Y")
+    print(f"\n[{change_label.upper()} SOURCE AGGREGATION CHANGE]")
     print(f"  {BREAK_NOTE_2025}")

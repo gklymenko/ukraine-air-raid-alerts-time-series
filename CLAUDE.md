@@ -153,16 +153,16 @@ The rest of the pipeline works purely on the canonical model and never needs to 
 ```python
 @dataclass
 class Forecast:
-    point: pd.Series      # indexed by date
-    lower: pd.Series      # lower bound of prediction interval
-    upper: pd.Series      # upper bound of prediction interval
-    level: float          # nominal coverage, e.g. 0.80
+  point: pd.Series      # indexed by date
+  lower: pd.Series      # lower bound of prediction interval
+  upper: pd.Series      # upper bound of prediction interval
+  level: float          # nominal coverage, e.g. 0.80
 
 class Forecaster(ABC):
-    @abstractmethod
-    def fit(self, y: pd.Series) -> "Forecaster": ...
-    @abstractmethod
-    def predict(self, horizon: int, level: float = 0.80) -> Forecast: ...
+  @abstractmethod
+  def fit(self, y: pd.Series) -> "Forecaster": ...
+  @abstractmethod
+  def predict(self, horizon: int, level: float = 0.80) -> Forecast: ...
 ```
 A new model later (Prophet, SARIMA, LightGBM) is just a new `Forecaster` subclass.
 
@@ -199,7 +199,11 @@ In `analysis.py`, for a focal oblast (default **Kyiv City**) and over all oblast
 - `seasonal_decompose` (trend / weekly seasonality / residual);
 - day-of-week and hour-of-day patterns;
 - alert-duration distribution;
-- highlight the 2025 structural-break region.
+- mark the **Dec-2025 source-aggregation change** with a single vertical line at
+  `SOURCE_AGGREGATION_CHANGE = 2025-12-01` (config), labelled "source aggregation change",
+  not a shaded band. This is a *methodology marker for context* — the `level=="oblast"`
+  series stays continuous across it (verified), so it is NOT an observed discontinuity.
+  The note may add that district-level recording was phased in from spring 2025.
   All figures saved to `outputs/`.
 
 ## 8. Forecast + evaluation (probabilistic, honest)

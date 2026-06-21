@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from statsmodels.tsa.seasonal import DecomposeResult
 
-from airraid_tsa.config import OUTPUTS_DIR
+from airraid_tsa.config import OUTPUTS_DIR, SOURCE_AGGREGATION_CHANGE
 
 _DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
@@ -222,10 +222,11 @@ def plot_structural_break(
     region: str,
     output_dir: Path = OUTPUTS_DIR,
 ) -> Path:
-    """Daily series + 30-day rolling mean, with 2025 break period shaded.
+    """Daily series + 30-day rolling mean, with a Dec-2025 source-change marker.
 
-    The orange band marks Jan–Jul 2025, when some regions moved to district-level
-    aggregation.  It is shaded only when the series extends into that window.
+    A single vertical dashed line marks December 2025 when the official source's
+    aggregation changed (district/raion alerts became dominant).  The marker is
+    drawn only when the series extends to or past that date.
 
     Parameters
     ----------
@@ -248,14 +249,20 @@ def plot_structural_break(
         linewidth=2.0, color="firebrick", label="30-day rolling mean",
     )
 
-    # Shade the 2025 methodology-change window only if data reaches it.
-    break_start = pd.Timestamp("2025-01-01", tz="UTC")
-    break_end   = pd.Timestamp("2025-07-01", tz="UTC")
-    if series.index.max() >= break_start:
-        shade_end = min(break_end, series.index.max())
-        ax.axvspan(
-            break_start, shade_end,
-            alpha=0.15, color="orange", label="2025 methodology shift (shaded)",
+    # Draw vertical marker only when the series reaches the change date.
+    # Match the marker's tz to the index so matplotlib places it correctly.
+    if series.index.max() >= SOURCE_AGGREGATION_CHANGE:
+        marker = (
+            SOURCE_AGGREGATION_CHANGE
+            if series.index.tzinfo is not None
+            else SOURCE_AGGREGATION_CHANGE.tz_localize(None)
+        )
+        ax.axvline(
+            marker,
+            color="orange",
+            linestyle="--",
+            linewidth=1.5,
+            label="Dec 2025: source aggregation change",
         )
 
     ax.set_title(f"{region} — alert_minutes with 30-day rolling mean")

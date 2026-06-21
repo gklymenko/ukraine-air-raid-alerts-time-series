@@ -15,7 +15,7 @@ from __future__ import annotations
 import pandas as pd
 from statsmodels.tsa.seasonal import DecomposeResult, seasonal_decompose
 
-from airraid_tsa.config import BREAK_NOTE_2025
+from airraid_tsa.config import BREAK_NOTE_2025, SOURCE_AGGREGATION_CHANGE
 from airraid_tsa.resample import resample_daily
 
 
@@ -185,11 +185,11 @@ def duration_distribution(
 # ---------------------------------------------------------------------------
 
 def structural_break_view(series: pd.Series) -> pd.Series:
-    """Compute a 30-day rolling mean and print the 2025 structural-break note.
+    """Compute a 30-day rolling mean and print the source-aggregation-change note.
 
     The rolling mean is intended to be overlaid on the raw series in a plot to
-    make any level shifts (including the 2025 methodology change) visually clear.
-    No statistical changepoint algorithm is applied.
+    make any level shifts around SOURCE_AGGREGATION_CHANGE (Dec 2025) visually
+    clear.  No statistical changepoint algorithm is applied.
 
     Parameters
     ----------
