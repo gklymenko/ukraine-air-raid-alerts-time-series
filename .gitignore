@@ -1,7 +1,7 @@
 .venv/
 .idea/
-data/raw/
-outputs/
+#data/raw/
+#outputs/
 __pycache__/
 *.pyc
 *.pyo
