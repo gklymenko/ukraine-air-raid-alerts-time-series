@@ -88,6 +88,17 @@ Every adapter produces a DataFrame with these columns:
 | `source` | str | `"official"` or `"volunteer"` |
 | `geo_level` | str | Always `"oblast"` in the MVP |
 
+## Forecast
+
+After backtesting, the pipeline selects the best baseline by MAE, refits it on all
+available data, and writes a 7-day probabilistic forecast to
+`outputs/forecast_next_7_days.csv` (columns: `date, point, lower, upper, level, model`).
+
+> The model is selected by walk-forward backtest, then refit on all available observations
+> to generate a short-horizon forecast. This forecast is a demonstration of the full
+> pipeline, not a reliable prediction: the baselines barely beat the naive benchmark
+> (MASE ≈ 1) and the 80% intervals undercover (~72%), so treat the numbers with caution.
+
 ## Honesty note
 
 This project analyses alert *activity* (counts / total minutes) for civilian-preparedness

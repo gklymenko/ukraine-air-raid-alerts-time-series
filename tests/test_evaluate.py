@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from airraid_tsa.evaluate import (
+    forward_forecast,
     interval_coverage,
     mae,
     mase,
@@ -241,3 +242,66 @@ class TestWalkForward:
     def test_lower_le_upper_everywhere(self, utc_series):
         results = walk_forward(MovingAverageForecaster(window=7), utc_series, initial_train_size=14)
         assert (results["lower"] <= results["upper"]).all()
+
+
+# ---------------------------------------------------------------------------
+# Forward forecast
+# ---------------------------------------------------------------------------
+
+class TestForwardForecast:
+    @pytest.fixture()
+    def metrics_stub(self) -> pd.DataFrame:
+        """Minimal metrics DataFrame with MAE column — SeasonalNaive wins."""
+        return pd.DataFrame(
+            {"MAE": [15.0, 8.0, 12.0]},
+            index=pd.Index(
+                ["NaiveForecaster", "SeasonalNaive", "MovingAverage7"],
+                name="forecaster",
+            ),
+        )
+
+    @pytest.fixture()
+    def long_series(self) -> pd.Series:
+        """28-day stationary series with a weekly pattern.
+
+        Lag-7 residuals are all zero → lower = point = upper, so lower <= point <= upper
+        holds unconditionally regardless of which forecaster is selected.
+        """
+        pattern = [100.0, 120.0, 90.0, 110.0, 80.0, 130.0, 95.0] * 4  # 28 days
+        idx = pd.date_range("2024-01-01", periods=28, freq="D", tz="UTC")
+        return pd.Series(pattern, index=idx)
+
+    def test_csv_has_exactly_7_rows(self, metrics_stub, long_series, tmp_path):
+        forward_forecast(metrics_stub, long_series, horizon=7, output_dir=tmp_path)
+        df = pd.read_csv(tmp_path / "forecast_next_7_days.csv")
+        assert len(df) == 7
+
+    def test_all_dates_strictly_after_series_end(self, metrics_stub, long_series, tmp_path):
+        forward_forecast(metrics_stub, long_series, horizon=7, output_dir=tmp_path)
+        df = pd.read_csv(tmp_path / "forecast_next_7_days.csv", parse_dates=["date"])
+        series_end = long_series.index[-1].tz_localize(None)
+        assert (df["date"] > series_end).all()
+
+    def test_lower_le_point_le_upper(self, metrics_stub, long_series, tmp_path):
+        forward_forecast(metrics_stub, long_series, horizon=7, output_dir=tmp_path)
+        df = pd.read_csv(tmp_path / "forecast_next_7_days.csv")
+        assert (df["lower"] <= df["point"]).all()
+        assert (df["point"] <= df["upper"]).all()
+
+    def test_select_by_is_respected(self, long_series, tmp_path):
+        # Build a metrics stub where RMSE column picks a different winner than MAE.
+        metrics = pd.DataFrame(
+            {"MAE": [5.0, 10.0, 8.0], "RMSE": [9.0, 4.0, 7.0]},
+            index=pd.Index(
+                ["NaiveForecaster", "SeasonalNaive", "MovingAverage7"],
+                name="forecaster",
+            ),
+        )
+        forward_forecast(metrics, long_series, horizon=7, select_by="RMSE", output_dir=tmp_path)
+        df = pd.read_csv(tmp_path / "forecast_next_7_days.csv")
+        assert df["model"].iloc[0] == "SeasonalNaive"
+
+    def test_model_column_matches_winner(self, metrics_stub, long_series, tmp_path):
+        forward_forecast(metrics_stub, long_series, horizon=7, output_dir=tmp_path)
+        df = pd.read_csv(tmp_path / "forecast_next_7_days.csv")
+        assert (df["model"] == "SeasonalNaive").all()  # lowest MAE in metrics_stub

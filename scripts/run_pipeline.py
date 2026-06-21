@@ -39,7 +39,7 @@ from airraid_tsa.config import (  # noqa: E402
     SYNTHETIC_CSV,
     VOLUNTEER_CSV,
 )
-from airraid_tsa.evaluate import evaluate_all  # noqa: E402
+from airraid_tsa.evaluate import evaluate_all, forward_forecast  # noqa: E402
 from airraid_tsa.ingest import load_official_csv, load_volunteer_csv  # noqa: E402
 from airraid_tsa.plots import (  # noqa: E402
     plot_decomposition,
@@ -175,7 +175,8 @@ def main() -> None:
     print(f"\n[forecast] Target: daily alert_minutes for '{FOCAL_OBLAST}'")
     print(f"[forecast] Series length: {len(focal_minutes)} days")
 
-    evaluate_all(focal_minutes, level=0.80)
+    metrics_df = evaluate_all(focal_minutes, level=0.80)
+    forward_forecast(metrics_df, focal_minutes, horizon=7, level=0.80)
 
     # ------------------------------------------------------------------
     # Summary of generated outputs

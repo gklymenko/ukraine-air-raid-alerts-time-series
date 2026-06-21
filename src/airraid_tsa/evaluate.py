@@ -330,6 +330,88 @@ def evaluate_all(
     return metrics_df
 
 
+def forward_forecast(
+    metrics_df: pd.DataFrame,
+    y: pd.Series,
+    horizon: int = 7,
+    level: float = 0.80,
+    select_by: str = "MAE",
+    output_dir: Path = OUTPUTS_DIR,
+) -> Path:
+    """Select the walk-forward winner, refit on the full series, forecast `horizon` days.
+
+    Steps:
+    1. Pick the row in metrics_df with the lowest value of `select_by` (default MAE).
+    2. Refit that forecaster on the *entire* series y.
+    3. Call predict(horizon, level) — the returned index must be strictly future dates.
+    4. Write outputs/forecast_next_7_days.csv with columns:
+       date, point, lower, upper, level, model.
+
+    Parameters
+    ----------
+    metrics_df : pd.DataFrame  Walk-forward metrics table (output of evaluate_all).
+    y          : pd.Series     Full daily series (DatetimeIndex, UTC).
+    horizon    : int           Days ahead to forecast (default 7).
+    level      : float         Nominal PI coverage (default 0.80).
+    select_by  : str           Column in metrics_df to minimise (default "MAE").
+    output_dir : Path          Directory where the CSV is written.
+
+    Returns
+    -------
+    Path   Path to the saved forecast_next_7_days.csv.
+    """
+    from airraid_tsa.forecast.baselines import (
+        MovingAverageForecaster,
+        NaiveForecaster,
+        SeasonalNaiveForecaster,
+    )
+
+    _name_to_forecaster: dict[str, "Forecaster"] = {
+        "NaiveForecaster": NaiveForecaster(),
+        "SeasonalNaive": SeasonalNaiveForecaster(),
+        "MovingAverage7": MovingAverageForecaster(window=7),
+    }
+
+    # Resolve the selection column case-insensitively.
+    col = next(
+        (c for c in metrics_df.columns if c.upper() == select_by.upper()),
+        select_by,
+    )
+    winner_name = str(metrics_df[col].idxmin())
+    winner_fc = _name_to_forecaster[winner_name]
+
+    series_end = y.index[-1]
+    print(f"\n[forward_forecast] Selected by {col}: {winner_name}")
+    print(f"[forward_forecast] Refitting on full series ({len(y)} days, last: {series_end.date()})…")
+
+    winner_fc.fit(y)
+    fc = winner_fc.predict(horizon=horizon, level=level)
+
+    # Safety check: every forecast date must be strictly after the series end.
+    if not (fc.point.index > series_end).all():
+        raise ValueError(
+            "Forecast index contains dates <= series end — predict() returned past dates."
+        )
+
+    out_df = pd.DataFrame({
+        "date":  fc.point.index,
+        "point": fc.point.values,
+        "lower": fc.lower.values,
+        "upper": fc.upper.values,
+        "level": level,
+        "model": winner_name,
+    })
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "forecast_next_7_days.csv"
+    out_df.to_csv(csv_path, index=False, date_format="%Y-%m-%d")
+
+    print(f"[forward_forecast] {horizon}-day point forecast ({level:.0%} PI):")
+    print(out_df.to_string(index=False, float_format=lambda x: f"{x:.1f}"))
+    print(f"[forward_forecast] Saved: {csv_path}")
+    return csv_path
+
+
 def _plot_forecast(
     results: pd.DataFrame,
     forecaster_name: str,

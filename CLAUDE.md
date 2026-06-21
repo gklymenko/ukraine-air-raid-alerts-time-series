@@ -227,6 +227,20 @@ test after) plus a simple **expanding-window walk-forward**:
 - Output: a small metrics table (printed + saved) and a forecast-vs-actual plot with the
   prediction interval shaded.
 
+### Forward forecast (after evaluation)
+Backtesting selects a model; it must then actually produce a forward forecast:
+1. pick the **winner by MAE** (the metric is explicit/configurable);
+2. **refit** the winner on the *full* `focal_minutes` series;
+3. forecast the next **7 days** via `predict(7, level=0.80)` (the index must extend into the
+   future: last_date + 1..7);
+4. write `outputs/forecast_next_7_days.csv` with `date, point, lower, upper, level, model`.
+
+README wording for this step:
+> The model is selected by walk-forward backtest, then refit on all available observations
+> to generate a short-horizon forecast. This forecast is a demonstration of the full
+> pipeline, not a reliable prediction: the baselines barely beat the naive benchmark
+> (MASE ≈ 1) and the 80% intervals undercover (~72%), so treat the numbers with caution.
+
 ### ⚠️ Known pitfall — label leakage (applies ONLY to the classification extension)
 The MVP forecasts daily volume from an event log and is NOT affected by this. But when
 the classification framing (§10, "alert in next N minutes") is built later, beware:
@@ -247,7 +261,9 @@ real CSV, and produces:
 1. a printed data-quality report,
 2. the analysis figures in `outputs/`,
 3. a forecast-vs-actual plot with intervals,
-4. a metrics table (MAE, RMSE, MASE, coverage, interval width, pinball loss).
+4. a metrics table (MAE, RMSE, MASE, coverage, interval width, pinball loss),
+5. `outputs/forecast_next_7_days.csv` — the selected model refit on all data, forecasting
+   the next 7 days with prediction intervals.
 
 Plus passing `pytest` on `test_resample.py` and `test_evaluate.py`.
 
