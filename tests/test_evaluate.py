@@ -1,4 +1,4 @@
-"""Unit tests for evaluate.py — metric functions only (walk-forward is Phase 3)."""
+"""Unit tests for evaluate.py — metric functions and walk-forward backtest."""
 
 import math
 
@@ -13,6 +13,12 @@ from airraid_tsa.evaluate import (
     pinball_loss,
     rmse,
     time_split,
+    walk_forward,
+)
+from airraid_tsa.forecast.baselines import (
+    MovingAverageForecaster,
+    NaiveForecaster,
+    SeasonalNaiveForecaster,
 )
 
 
@@ -179,3 +185,59 @@ class TestPinballLoss:
         over_pred    = pd.Series([6.0])  # error = -1 (actual < predicted)
         assert pinball_loss(actual, under_pred, quantile=0.9) > \
                pinball_loss(actual, over_pred,  quantile=0.9)
+
+
+# ---------------------------------------------------------------------------
+# Walk-forward
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def utc_series() -> pd.Series:
+    """20-day constant-value series (value=10.0) with a UTC DatetimeIndex."""
+    idx = pd.date_range("2024-01-01", periods=20, freq="D", tz="UTC")
+    return pd.Series(10.0, index=idx)
+
+
+class TestWalkForward:
+    def test_result_has_correct_columns(self, utc_series):
+        results = walk_forward(NaiveForecaster(), utc_series, initial_train_size=14)
+        assert set(results.columns) == {"actual", "point", "lower", "upper"}
+
+    def test_number_of_folds(self, utc_series):
+        # initial_train_size=14, n=20, horizon=1, step=1  → 6 folds (days 15–20)
+        results = walk_forward(NaiveForecaster(), utc_series, initial_train_size=14)
+        assert len(results) == 6
+
+    def test_step_reduces_folds(self, utc_series):
+        # step=2 halves the number of folds (ceiling of 6/2 = 3)
+        results = walk_forward(NaiveForecaster(), utc_series, initial_train_size=14, step=2)
+        assert len(results) == 3
+
+    def test_naive_point_forecast_on_constant_series(self, utc_series):
+        # NaiveForecaster on a constant series → point == actual everywhere → MAE == 0
+        results = walk_forward(NaiveForecaster(), utc_series, initial_train_size=14)
+        assert mae(results["actual"], results["point"]) == pytest.approx(0.0)
+
+    def test_interval_covers_constant_series(self, utc_series):
+        # Constant series has zero residuals → lower == upper == point → coverage = 1.0
+        # (actual == point, and lower <= actual <= upper holds at boundary)
+        results = walk_forward(NaiveForecaster(), utc_series, initial_train_size=14)
+        cov = interval_coverage(results["actual"], results["lower"], results["upper"])
+        assert cov == pytest.approx(1.0)
+
+    def test_seasonal_naive_on_weekly_constant(self):
+        # Perfect weekly pattern: SeasonalNaive should forecast exactly.
+        idx = pd.date_range("2024-01-01", periods=21, freq="D", tz="UTC")
+        pattern = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0] * 3
+        y = pd.Series(pattern, index=idx)
+        results = walk_forward(SeasonalNaiveForecaster(), y, initial_train_size=14)
+        assert mae(results["actual"], results["point"]) == pytest.approx(0.0)
+
+    def test_walk_forward_returns_empty_when_no_folds(self, utc_series):
+        # initial_train_size >= len(y) → no folds possible
+        results = walk_forward(NaiveForecaster(), utc_series, initial_train_size=20)
+        assert results.empty
+
+    def test_lower_le_upper_everywhere(self, utc_series):
+        results = walk_forward(MovingAverageForecaster(window=7), utc_series, initial_train_size=14)
+        assert (results["lower"] <= results["upper"]).all()

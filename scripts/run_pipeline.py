@@ -2,21 +2,26 @@
 
 Execution order
 ---------------
-1. Ingest   — load CSV into canonical events DataFrame.
-2. Verify   — print data-quality report.
+1. Ingest   — load CSV(s) into canonical events DataFrames.
+2. Verify   — print data-quality report + cross-source check when volunteer data present.
 3. Resample — events -> daily per-oblast series (MultiIndex).
 4. Analysis — EDA: decomposition, weekday/hour profiles, duration dist, break view.
-5. Forecast — TODO (Phase 3).
-6. Evaluate — TODO (Phase 3).
+5. Forecast — probabilistic baselines for the focal oblast.
+6. Evaluate — walk-forward backtest; metrics table + forecast plot.
 
-Picks up the real CSV if it exists at data/raw/official_data_en.csv,
-otherwise falls back to the synthetic fixture at data/synthetic/synthetic_data.csv.
+Data priority
+-------------
+Official source:
+  1. data/raw/official_data_en.csv  (real data)
+  2. data/synthetic/synthetic_data.csv  (offline fallback)
+
+Volunteer source (cross-check only, never merged):
+  data/raw/volunteer_data_en.csv  (used if present; skipped silently otherwise)
 """
 
 import sys
 from pathlib import Path
 
-# Make the src package importable when running as a script.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
@@ -28,8 +33,14 @@ from airraid_tsa.analysis import (  # noqa: E402
     structural_break_view,
     weekday_profile,
 )
-from airraid_tsa.config import FOCAL_OBLAST, REAL_CSV, SYNTHETIC_CSV  # noqa: E402
-from airraid_tsa.ingest import load_vadimkin_csv  # noqa: E402
+from airraid_tsa.config import (  # noqa: E402
+    FOCAL_OBLAST,
+    OFFICIAL_CSV,
+    SYNTHETIC_CSV,
+    VOLUNTEER_CSV,
+)
+from airraid_tsa.evaluate import evaluate_all  # noqa: E402
+from airraid_tsa.ingest import load_official_csv, load_volunteer_csv  # noqa: E402
 from airraid_tsa.plots import (  # noqa: E402
     plot_decomposition,
     plot_duration_distribution,
@@ -47,28 +58,41 @@ def main() -> None:
     # ------------------------------------------------------------------
     # 1. Ingest
     # ------------------------------------------------------------------
-    if REAL_CSV.exists():
-        csv_path = REAL_CSV
-        print(f"[ingest] Using real data: {csv_path}")
+    if OFFICIAL_CSV.exists():
+        csv_path = OFFICIAL_CSV
+        print(f"[ingest] Using official data: {csv_path}")
     elif SYNTHETIC_CSV.exists():
         csv_path = SYNTHETIC_CSV
-        print(f"[ingest] Real data not found. Using synthetic fixture: {csv_path}")
+        print(f"[ingest] Official data not found. Using synthetic fixture: {csv_path}")
     else:
         print(
             "[ingest] ERROR: No data file found.\n"
-            f"  Expected real CSV at  : {REAL_CSV}\n"
-            f"  Expected synthetic at : {SYNTHETIC_CSV}\n"
+            f"  Expected official CSV at  : {OFFICIAL_CSV}\n"
+            f"  Expected synthetic at     : {SYNTHETIC_CSV}\n"
             "Run 'python scripts/make_synthetic.py' first."
         )
         sys.exit(1)
 
-    events = load_vadimkin_csv(csv_path)
-    print(f"[ingest] Loaded {len(events):,} events.\n")
+    events = load_official_csv(csv_path)
+    print(f"[ingest] Loaded {len(events):,} official-oblast events.\n")
+
+    # Volunteer data for cross-check (silently skip if absent).
+    volunteer_events = None
+    if VOLUNTEER_CSV.exists():
+        try:
+            volunteer_events = load_volunteer_csv(VOLUNTEER_CSV)
+            print(f"[ingest] Loaded {len(volunteer_events):,} volunteer events for cross-check.\n")
+        except Exception as exc:
+            print(f"[ingest] WARNING: Could not load volunteer CSV: {exc}\n")
 
     # ------------------------------------------------------------------
     # 2. Verify
     # ------------------------------------------------------------------
-    run_quality_report(events)
+    run_quality_report(
+        events,
+        volunteer_events=volunteer_events,
+        ingest_stats=events.attrs,
+    )
 
     # ------------------------------------------------------------------
     # 3. Resample
@@ -84,14 +108,12 @@ def main() -> None:
     print(f"ANALYSIS — focal oblast: {FOCAL_OBLAST}")
     print("=" * 60)
 
-    # 4a. Zero-filled daily series for the focal oblast.
     focal_df = daily_series_filled(events, FOCAL_OBLAST)
     focal_minutes = focal_df["alert_minutes"]
 
     print(f"\nFocal-oblast daily series (first 10 rows):")
     print(focal_df.head(10).to_string())
 
-    # 4b. Seasonal decomposition — focal oblast.
     print(f"\n[analysis] Decomposing '{FOCAL_OBLAST}' alert_minutes (period=7)…")
     decomp_result = decompose(focal_minutes, period=7, region=FOCAL_OBLAST)
     if decomp_result is not None:
@@ -101,14 +123,12 @@ def main() -> None:
             filename=f"{_slug(FOCAL_OBLAST)}_decomposition.png",
         )
 
-    # 4c. Weekday profile — focal oblast.
     wp = weekday_profile(focal_minutes)
     print(f"\nWeekday profile — mean alert_minutes ({FOCAL_OBLAST}):")
     for dow, val in wp.items():
         print(f"  {_DAY_LABELS[dow]}: {val:7.1f} min")
     plot_weekday_profile(wp, region=FOCAL_OBLAST, metric="alert_minutes")
 
-    # 4d. Hour-of-day profile — focal oblast.
     hp = hour_of_day_profile(events, FOCAL_OBLAST)
     print(f"\nHour-of-day profile — top 6 hours ({FOCAL_OBLAST}):")
     top_hours = hp.sort_values(ascending=False).head(6)
@@ -116,7 +136,6 @@ def main() -> None:
         print(f"  {hour:02d}:00 UTC  →  {count} alert(s)")
     plot_hour_profile(hp, region=FOCAL_OBLAST)
 
-    # 4e. Duration distribution — focal oblast.
     all_dur, non_naive_dur = duration_distribution(events, FOCAL_OBLAST)
     print(f"\nAlert duration distribution ({FOCAL_OBLAST}):")
     print(f"  All alerts       :  n={len(all_dur):4d}  "
@@ -129,11 +148,9 @@ def main() -> None:
           f"p90={non_naive_dur.quantile(0.9):.1f} min")
     plot_duration_distribution(all_dur, non_naive_dur, region=FOCAL_OBLAST)
 
-    # 4f. Structural break view — focal oblast.
     rolling = structural_break_view(focal_minutes)
     plot_structural_break(focal_minutes, rolling, region=FOCAL_OBLAST)
 
-    # 4g. Cross-oblast decompositions — all non-always-on regions.
     available_regions = daily.index.get_level_values("region").unique().tolist()
     other_regions = sorted(r for r in available_regions if r != FOCAL_OBLAST)
 
@@ -150,19 +167,26 @@ def main() -> None:
                 )
 
     # ------------------------------------------------------------------
+    # 5–6. Forecast + Evaluate
+    # ------------------------------------------------------------------
+    print("\n" + "=" * 60)
+    print(f"FORECAST + EVALUATION — focal oblast: {FOCAL_OBLAST}")
+    print("=" * 60)
+    print(f"\n[forecast] Target: daily alert_minutes for '{FOCAL_OBLAST}'")
+    print(f"[forecast] Series length: {len(focal_minutes)} days")
+
+    evaluate_all(focal_minutes, level=0.80)
+
+    # ------------------------------------------------------------------
     # Summary of generated outputs
     # ------------------------------------------------------------------
     from airraid_tsa.config import OUTPUTS_DIR
-    output_files = sorted(OUTPUTS_DIR.glob("*.png"))
+    output_files = sorted(OUTPUTS_DIR.glob("*"))
     print(f"\n[outputs] {len(output_files)} file(s) in {OUTPUTS_DIR}:")
     for f in output_files:
         print(f"  {f.name}")
 
-    # ------------------------------------------------------------------
-    # 5–6. TODO
-    # ------------------------------------------------------------------
-    print("\n[forecast]  TODO — Phase 3")
-    print("[evaluate]  TODO — Phase 3")
+    print("\n[pipeline] Done.")
 
 
 def _slug(name: str) -> str:

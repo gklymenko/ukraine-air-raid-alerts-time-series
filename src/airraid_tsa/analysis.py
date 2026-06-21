@@ -15,7 +15,7 @@ from __future__ import annotations
 import pandas as pd
 from statsmodels.tsa.seasonal import DecomposeResult, seasonal_decompose
 
-from airraid_tsa.config import ALWAYS_ON_REGIONS, BREAK_NOTE_2025
+from airraid_tsa.config import BREAK_NOTE_2025
 from airraid_tsa.resample import resample_daily
 
 
@@ -80,10 +80,6 @@ def decompose(
     -------
     DecomposeResult or None
     """
-    if region in ALWAYS_ON_REGIONS:
-        print(f"  [decompose] Skipping '{region}' — in always-on region set.")
-        return None
-
     if series.std() < 1e-6:
         print(f"  [decompose] Skipping '{region}' — series is constant (std ≈ 0).")
         return None

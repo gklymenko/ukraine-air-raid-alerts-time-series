@@ -46,17 +46,46 @@ API client in the MVP. Those belong to extensions.
 
 ## 4. Data source
 
-Primary: **Vadimkin / `ukrainian-air-raid-sirens-dataset`** (GitHub), file
-`datasets/official_data_en.csv`.
-- Event-log format: one row per alert with `region`, `started_at`, `finished_at` (UTC).
-- `naive=True` rows have no end signal; `finished_at = started_at + 30 min` (estimate).
-- Long continuous history from 2022, oblast level, no auth needed.
+From **Vadimkin / `ukrainian-air-raid-sirens-dataset`** (GitHub). Both files updated
+daily; all times UTC. No auth needed. Freshness is still **verified at runtime** (§6).
 
-The repo claims daily auto-updates but freshness must be **verified at runtime**, not
-assumed (see §6). Fallback sources (extension): `alerts.com.ua` `/api/history`,
-`alerts.in.ua` API.
+### Primary — `datasets/official_data_en.csv`
+Official, multi-level file. Columns:
+`oblast, raion, hromada, level, started_at, finished_at, source` (NOTE: **no `naive`
+column**). The `level` column is the granularity of each row: `oblast` / `raion` /
+`hromada`. Since the Dec-2025 transition the file also carries raion/hromada rows, but
+**oblast-level rows continue uninterrupted to the present**.
 
-Place the downloaded CSV at `data/raw/official_data_en.csv` (git-ignored).
+This project uses **only `level == "oblast"` rows** — this isolates a stable geographic
+unit and removes cross-level double counting between oblast/raion/hromada. Kyiv City is a
+separate geographic unit (its own oblast-level value, distinct from Kyivska oblast).
+Primary analysis target: Kyiv City.
+
+**Data contract / known quality issue (mandatory):** the oblast-level subset is
+**systematically exact-duplicated — nearly every event appears exactly twice**
+(~130k rows → ~65k after dedup). Deduplication on the key
+`(region, started_at, finished_at)` is **required**; without it `alert_count` and
+`alert_minutes` are roughly doubled. The official adapter must dedup, and `verify.py` must
+report how many duplicate rows were removed.
+
+### Secondary — `datasets/volunteer_data_en.csv`
+Volunteer source (eTryvoga). Columns: `region, started_at, finished_at, naive`. Oblast-
+level by construction, history from 2022-02-25. Used **only as a quality cross-check /
+alternative source — never merged** with official data.
+
+### README wording (use verbatim, with live counts from the pipeline)
+> **Data handling.** The official source contains alerts at oblast, raion, and hromada
+> levels. This project uses only records where `level == "oblast"` to preserve a
+> consistent geographic unit. Kyiv City and Kyivska oblast are treated as separate units.
+>
+> The oblast-level subset contains systematic exact-duplicate records. Before aggregation,
+> events are deduplicated using the key `(oblast, started_at, finished_at)`.
+>
+> The resulting clean dataset contains ~65,000 oblast-level alert events from 15 March 2022
+> to the latest update (the pipeline prints exact, current counts on each run).
+
+Place files at `data/raw/` (git-ignored). Fallback live sources (extension only):
+`alerts.com.ua` `/api/history`, `alerts.in.ua` API.
 
 ## 5. Architecture & module responsibilities
 
@@ -75,7 +104,7 @@ Place the downloaded CSV at `data/raw/official_data_en.csv` (git-ignored).
     synthetic/                # tiny generated fixture, committed
   src/airraid_tsa/
     __init__.py
-    config.py                 # paths, oblast list, "always-on" regions, constants
+    config.py                 # paths, focal oblast, always-on heuristic, constants (regions derived from data, not hardcoded)
     ingest.py                 # source adapters -> canonical events DataFrame
     verify.py                 # data-quality + freshness report
     resample.py               # events -> daily per-oblast series
@@ -98,7 +127,27 @@ Place the downloaded CSV at `data/raw/official_data_en.csv` (git-ignored).
 ### Canonical events model (the contract every source must produce)
 A `pandas.DataFrame` with columns:
 `region: str`, `started_at: datetime[UTC]`, `finished_at: datetime[UTC]`,
-`naive: bool`, `source: str`.
+`naive: bool`, `source: str`, `geo_level: str` ("oblast" for the MVP).
+
+Adapter mappings (in `ingest.py`):
+- **OfficialOblastCsvAdapter (primary):** keep only `level == "oblast"`; rename
+  `oblast -> region`; set `naive = False` (no such column), `source = "official"`,
+  `geo_level = "oblast"`; then **dedup** on `(region, started_at, finished_at)`
+  (the official file contains duplicate same-interval oblast rows). Reference snippet:
+  ```python
+  official_oblast = (
+      official.loc[official["level"].eq("oblast")]
+      .rename(columns={"oblast": "region"})
+      .assign(naive=False, source="official", geo_level="oblast")
+      [["region", "started_at", "finished_at", "naive", "source", "geo_level"]]
+      .drop_duplicates(subset=["region", "started_at", "finished_at"])
+  )
+  ```
+- **VolunteerCsvAdapter (secondary, cross-check only):** keep `region`, `naive`; set
+  `source = "volunteer"`, `geo_level = "oblast"`.
+
+The rest of the pipeline works purely on the canonical model and never needs to know about
+`raion`/`hromada`. Carrying `geo_level` future-proofs the district/geo extension (§10).
 
 ### Forecaster interface (extension seam — keep stable)
 ```python
@@ -121,19 +170,26 @@ A new model later (Prophet, SARIMA, LightGBM) is just a new `Forecaster` subclas
 
 `verify.py` produces a printed/markdown **data-quality report** covering:
 - **Freshness**: `max(started_at)` vs today; warn if older than 2 days.
-- **Schema**: required columns present and parseable; `finished_at >= started_at` or `naive`.
+- **Schema**: required canonical columns present and parseable; `finished_at >= started_at`.
 - **Coverage**: date range, row count, and `% naive` per region.
-- **Sanity**: region names within the known oblast set; flag "always-on" regions
-  (continuous alert for very long spans — degenerate for volume forecasting).
-- **Structural-break note**: explicitly check the series around 2025, when some regions
-  moved to district-level alerts and aggregators changed methodology — this can create a
-  break that is *not* a real change in activity.
+- **Region set is derived from the data, NOT hardcoded.** Build the valid set as
+  `known_regions = set(events["region"].dropna().unique())`. Do not maintain a static
+  oblast list and do not flag absence of Crimea/Sevastopol (they are simply not present in
+  the oblast-level data) as an error.
+- **Adapter sanity**: assert every canonical row has `geo_level == "oblast"` (proves the
+  level filter worked and no raion/hromada leaked through).
+- **Always-on regions**: flag regions whose series is ~continuously active (degenerate for
+  volume forecasting) by a coverage/variance heuristic, not by hardcoded names.
+- **Cross-source check**: monthly oblast-activity comparison of official-oblast vs
+  volunteer for the focal oblast; report large divergences. This both validates the
+  numbers and confirms the official oblast subset does not thin out after Dec-2025.
 
-A quick manual check the author can also run:
+A quick manual freshness check the author can also run:
 ```python
 import pandas as pd
 df = pd.read_csv("data/raw/official_data_en.csv", parse_dates=["started_at"])
-print(df["started_at"].max())   # newest event in the data
+oblast = df.loc[df["level"].eq("oblast")]
+print(oblast["started_at"].max())   # newest oblast-level event
 ```
 
 ## 7. Analysis (the core deliverable)
@@ -160,10 +216,10 @@ Evaluation in `evaluate.py`, using a **time-based split** (train before cutoff d
 test after) plus a simple **expanding-window walk-forward**:
 - Point metrics: **MAE**, **RMSE**, **MASE** (scaled vs seasonal-naive; `<1` = useful).
 - Probabilistic metrics:
-    - **Interval coverage**: share of test points inside [lower, upper] vs nominal level
-      (well-calibrated ≈ 0.80 for an 80% PI).
-    - **Mean interval width** (sharpness).
-    - **Pinball (quantile) loss** at the interval quantiles — proper score, lower is better.
+  - **Interval coverage**: share of test points inside [lower, upper] vs nominal level
+    (well-calibrated ≈ 0.80 for an 80% PI).
+  - **Mean interval width** (sharpness).
+  - **Pinball (quantile) loss** at the interval quantiles — proper score, lower is better.
 - Output: a small metrics table (printed + saved) and a forecast-vs-actual plot with the
   prediction interval shaded.
 
@@ -199,7 +255,9 @@ Keep interfaces clean so these drop in later:
 - Live data adapters (`alerts.com.ua`, `alerts.in.ua`) behind the same canonical model.
 - Classification framing (P(alert in next N minutes)) as a separate target —
   **mind the label-leakage pitfall in §8 before trusting any metric here.**
-- District/hromada-level granularity.
+- District/hromada-level granularity — already enabled by the official file's
+  `oblast/raion/hromada/level` schema and the canonical `geo_level` column; a future
+  adapter just keeps `level in {"raion","hromada"}` instead of `"oblast"`.
 
 ## 11. Coding conventions
 

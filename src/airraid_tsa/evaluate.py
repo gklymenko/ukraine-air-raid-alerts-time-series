@@ -2,27 +2,30 @@
 
 Public functions
 ----------------
-time_split(series, cutoff_date)         -> (train, test)
-mae(actual, predicted)                  -> float
-rmse(actual, predicted)                 -> float
-mase(actual, predicted, train, period)  -> float
-interval_coverage(actual, lower, upper) -> float
-mean_interval_width(lower, upper)       -> float
-pinball_loss(actual, predicted, q)      -> float
-print_metrics_table(metrics)            -> None   (printed + saved to outputs/)
-
-Walk-forward evaluation (TODO Phase 3):
-walk_forward_evaluate(forecaster, series, min_train, horizon) -> pd.DataFrame
+time_split(series, cutoff_date)                           -> (train, test)
+mae(actual, predicted)                                    -> float
+rmse(actual, predicted)                                   -> float
+mase(actual, predicted, train, period)                    -> float
+interval_coverage(actual, lower, upper)                   -> float
+mean_interval_width(lower, upper)                         -> float
+pinball_loss(actual, predicted, q)                        -> float
+print_metrics_table(metrics)                              -> None
+walk_forward(forecaster, y, initial_train_size, ...)      -> pd.DataFrame
+evaluate_all(y, level)                                    -> pd.DataFrame
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
 from airraid_tsa.config import OUTPUTS_DIR
+
+if TYPE_CHECKING:
+    from airraid_tsa.forecast.base import Forecaster
 
 
 # ---------------------------------------------------------------------------
@@ -165,3 +168,204 @@ def print_metrics_table(metrics: dict[str, float], output_dir: Path = OUTPUTS_DI
 
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "metrics.txt").write_text(table + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Walk-forward backtest
+# ---------------------------------------------------------------------------
+
+def walk_forward(
+    forecaster: "Forecaster",
+    y: pd.Series,
+    initial_train_size: int,
+    horizon: int = 1,
+    step: int = 1,
+    level: float = 0.80,
+) -> pd.DataFrame:
+    """Expanding-window walk-forward backtest.
+
+    At each fold, the forecaster is re-fit on all data up to that point
+    (the training window expands by `step` each iteration), then asked to
+    predict `horizon` steps ahead.  The test observations are collected and
+    returned as a DataFrame.
+
+    Parameters
+    ----------
+    forecaster        : Forecaster   Any fitted or unfitted Forecaster instance.
+    y                 : pd.Series    Full daily series (DatetimeIndex).
+    initial_train_size: int          Number of observations in the first training window.
+    horizon           : int          Steps ahead to forecast per fold (default 1).
+    step              : int          How many observations to advance per fold (default 1).
+    level             : float        Nominal prediction-interval coverage.
+
+    Returns
+    -------
+    pd.DataFrame
+        Indexed by date with columns: actual, point, lower, upper.
+        Rows cover all test observations across all folds.
+    """
+    n = len(y)
+    records: list[dict] = []
+
+    for train_end in range(initial_train_size, n - horizon + 1, step):
+        train = y.iloc[:train_end]
+        test_slice = y.iloc[train_end:train_end + horizon]
+
+        forecaster.fit(train)
+        fc = forecaster.predict(horizon=horizon, level=level)
+
+        for i, (date, actual) in enumerate(test_slice.items()):
+            records.append(
+                {
+                    "date": date,
+                    "actual": float(actual),
+                    "point": float(fc.point.iloc[i]),
+                    "lower": float(fc.lower.iloc[i]),
+                    "upper": float(fc.upper.iloc[i]),
+                }
+            )
+
+    if not records:
+        return pd.DataFrame(columns=["actual", "point", "lower", "upper"])
+
+    return pd.DataFrame(records).set_index("date")
+
+
+# ---------------------------------------------------------------------------
+# Multi-forecaster evaluation
+# ---------------------------------------------------------------------------
+
+def evaluate_all(
+    y: pd.Series,
+    level: float = 0.80,
+    output_dir: Path = OUTPUTS_DIR,
+) -> pd.DataFrame:
+    """Run all three baselines through walk-forward and return a metrics table.
+
+    Uses an expanding-window backtest with initial_train_size = 2/3 of the
+    series length (minimum 14 observations so seasonal residuals are meaningful).
+
+    Parameters
+    ----------
+    y          : pd.Series   Full daily series for one oblast.
+    level      : float       Nominal PI coverage (default 0.80).
+    output_dir : Path        Where to write metrics.csv.
+
+    Returns
+    -------
+    pd.DataFrame
+        Rows = forecasters, columns = MAE, RMSE, MASE, Coverage,
+        Interval_Width, Pinball_q10, Pinball_q90, Pinball_avg.
+        Also printed to stdout and saved to output_dir/metrics.csv.
+    """
+    # Deferred import avoids a circular dependency at module load time.
+    from airraid_tsa.forecast.baselines import (
+        MovingAverageForecaster,
+        NaiveForecaster,
+        SeasonalNaiveForecaster,
+    )
+
+    initial_train_size = max(14, len(y) * 2 // 3)
+
+    forecasters: list[tuple[str, "Forecaster"]] = [
+        ("NaiveForecaster", NaiveForecaster()),
+        ("SeasonalNaive", SeasonalNaiveForecaster()),
+        ("MovingAverage7", MovingAverageForecaster(window=7)),
+    ]
+
+    rows = []
+    all_results: dict[str, pd.DataFrame] = {}
+
+    for name, fc in forecasters:
+        results = walk_forward(fc, y, initial_train_size, horizon=1, level=level)
+        all_results[name] = results
+
+        if results.empty:
+            continue
+
+        actual = results["actual"]
+        point = results["point"]
+        lower = results["lower"]
+        upper = results["upper"]
+        train = y.iloc[:initial_train_size]
+
+        q_low = (1.0 - level) / 2.0
+        q_high = (1.0 + level) / 2.0
+        pl_low = pinball_loss(actual, lower, q_low)
+        pl_high = pinball_loss(actual, upper, q_high)
+
+        rows.append(
+            {
+                "forecaster": name,
+                "MAE": mae(actual, point),
+                "RMSE": rmse(actual, point),
+                "MASE": mase(actual, point, train, seasonal_period=7),
+                "Coverage": interval_coverage(actual, lower, upper),
+                "Interval_Width": mean_interval_width(lower, upper),
+                "Pinball_q10": pl_low,
+                "Pinball_q90": pl_high,
+                "Pinball_avg": (pl_low + pl_high) / 2.0,
+            }
+        )
+
+    metrics_df = pd.DataFrame(rows).set_index("forecaster")
+
+    print("\n" + "=" * 78)
+    print(f"FORECAST EVALUATION  (walk-forward, horizon=1, level={level:.0%})")
+    print("=" * 78)
+    print(metrics_df.to_string(float_format=lambda x: f"{x:.4f}"))
+    print("=" * 78)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "metrics.csv"
+    metrics_df.to_csv(csv_path)
+    print(f"  [evaluate] Saved metrics: {csv_path}")
+
+    # Plot forecast vs actual for the best baseline (lowest MAE).
+    if not metrics_df.empty:
+        best_name = str(metrics_df["MAE"].idxmin())
+        best_results = all_results[best_name]
+        _plot_forecast(best_results, best_name, level, output_dir)
+
+    return metrics_df
+
+
+def _plot_forecast(
+    results: pd.DataFrame,
+    forecaster_name: str,
+    level: float,
+    output_dir: Path,
+) -> None:
+    """Forecast-vs-actual plot with shaded prediction interval."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(14, 5))
+
+    ax.fill_between(
+        results.index,
+        results["lower"],
+        results["upper"],
+        alpha=0.25,
+        color="steelblue",
+        label=f"{level:.0%} prediction interval",
+    )
+    ax.plot(results.index, results["actual"], color="black", linewidth=1.2, label="Actual")
+    ax.plot(
+        results.index, results["point"],
+        color="steelblue", linewidth=1.0, linestyle="--", label=f"Point ({forecaster_name})",
+    )
+
+    ax.set_title(f"Kyiv City — alert_minutes forecast vs actual  [{forecaster_name}]")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("alert_minutes")
+    ax.legend()
+    ax.grid(True, alpha=0.25)
+    plt.tight_layout()
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "forecast_kyiv_city.png"
+    fig.savefig(path, bbox_inches="tight", dpi=100)
+    plt.close(fig)
+    print(f"  [evaluate] Saved forecast plot: {path}")

@@ -5,72 +5,43 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-PROJECT_ROOT = Path(__file__).resolve().parents[2]  # …/ukrainian-air-raid-sirens-dataset
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 DATA_RAW_DIR = PROJECT_ROOT / "data" / "raw"
 DATA_SYNTHETIC_DIR = PROJECT_ROOT / "data" / "synthetic"
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 
-REAL_CSV = DATA_RAW_DIR / "official_data_en.csv"
+OFFICIAL_CSV = DATA_RAW_DIR / "official_data_en.csv"
+VOLUNTEER_CSV = DATA_RAW_DIR / "volunteer_data_en.csv"
 SYNTHETIC_CSV = DATA_SYNTHETIC_DIR / "synthetic_data.csv"
 
-# ---------------------------------------------------------------------------
-# Dataset schema
-# ---------------------------------------------------------------------------
-REQUIRED_COLUMNS: list[str] = ["region", "started_at", "finished_at", "naive"]
+# Back-compat alias used in verify/run_pipeline
+REAL_CSV = OFFICIAL_CSV
 
-# Duration assigned to naive alerts (no end signal recorded).
+# ---------------------------------------------------------------------------
+# Source identifiers
+# ---------------------------------------------------------------------------
+PRIMARY_SOURCE: str = "official"
+
+# ---------------------------------------------------------------------------
+# Dataset constants
+# ---------------------------------------------------------------------------
+
+# Duration assigned to naive alerts (volunteer source only).
 NAIVE_DURATION_MINUTES: int = 30
 
 # Freshness threshold — warn if newest event is older than this many days.
 FRESHNESS_WARN_DAYS: int = 2
 
-# ---------------------------------------------------------------------------
-# Oblast reference list (25 oblasts + Kyiv City + AR Crimea)
-# ---------------------------------------------------------------------------
-OBLAST_LIST: list[str] = [
-    "Cherkasy",
-    "Chernihiv",
-    "Chernivtsi",
-    "Crimea",          # AR Crimea / Autonomous Republic of Crimea
-    "Dnipropetrovsk",
-    "Donetsk",
-    "Ivano-Frankivsk",
-    "Kharkiv",
-    "Kherson",
-    "Khmelnytskyi",
-    "Kirovohrad",
-    "Kyiv",            # Kyiv Oblast (region surrounding the city)
-    "Kyiv City",       # The city itself — default focal oblast
-    "Luhansk",
-    "Lviv",
-    "Mykolaiv",
-    "Odesa",
-    "Poltava",
-    "Rivne",
-    "Sumy",
-    "Ternopil",
-    "Vinnytsia",
-    "Volyn",
-    "Zakarpattia",
-    "Zaporizhzhia",
-    "Zhytomyr",
-]
+# Threshold: an alert spanning more than this many hours is "always-on" suspect.
+ALWAYS_ON_HOURS_THRESHOLD: float = 12.0
 
-OBLAST_SET: set[str] = set(OBLAST_LIST)
+# ---------------------------------------------------------------------------
+# Analysis defaults
+# ---------------------------------------------------------------------------
 
 # Default region for focused single-region analysis.
 FOCAL_OBLAST: str = "Kyiv City"
-
-# ---------------------------------------------------------------------------
-# "Always-on" regions
-# Regions known to have had very long continuous alert spans — these are
-# degenerate for volume forecasting and should be flagged.
-# ---------------------------------------------------------------------------
-ALWAYS_ON_REGIONS: set[str] = {"Donetsk", "Luhansk", "Zaporizhzhia", "Kherson"}
-
-# Threshold: an alert spanning more than this many hours is "always-on" suspect.
-ALWAYS_ON_HOURS_THRESHOLD: float = 12.0
 
 # ---------------------------------------------------------------------------
 # 2025 structural-break note

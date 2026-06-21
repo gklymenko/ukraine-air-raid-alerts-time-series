@@ -15,10 +15,26 @@ pip install -r requirements.txt
 
 ## Data
 
-Place the Vadimkin dataset at `data/raw/official_data_en.csv` (git-ignored).
-Download from: https://github.com/Vadimkin/ukrainian-air-raid-sirens-dataset
+Download both files from
+[Vadimkin / ukrainian-air-raid-sirens-dataset](https://github.com/Vadimkin/ukrainian-air-raid-sirens-dataset)
+and place them at:
 
-Without real data the pipeline runs on a tiny synthetic fixture:
+```
+data/raw/official_data_en.csv    ← primary source (official alerts)
+data/raw/volunteer_data_en.csv   ← secondary source (cross-check only)
+```
+
+**Data handling.** The official source contains alerts at oblast, raion, and hromada
+levels. This project uses only records where `level == "oblast"` to preserve a
+consistent geographic unit. Kyiv City and Kyivska oblast are treated as separate units.
+
+The oblast-level subset contains systematic exact-duplicate records. Before aggregation,
+events are deduplicated using the key `(oblast, started_at, finished_at)`.
+
+The resulting clean dataset contains ~65,000 oblast-level alert events from 15 March 2022
+to the latest update (the pipeline prints exact, current counts on each run).
+
+Without real data the pipeline runs on a tiny synthetic fixture in the same format:
 
 ```bash
 python scripts/make_synthetic.py   # generates data/synthetic/synthetic_data.csv
@@ -38,25 +54,39 @@ pytest tests/
 
 ```
 src/airraid_tsa/   — core package
-  config.py        — paths, oblast list, constants
-  ingest.py        — CSV -> canonical events DataFrame
-  verify.py        — data-quality + freshness report
+  config.py        — paths, focal oblast, constants (no hardcoded region lists)
+  ingest.py        — OfficialOblastCsvAdapter + VolunteerCsvAdapter -> canonical events
+  verify.py        — data-quality + freshness + cross-source report
   resample.py      — events -> daily per-oblast time series
-  analysis.py      — EDA: decomposition, patterns (TODO)
-  plots.py         — plotting helpers (TODO)
-  forecast/        — Forecaster ABC + baseline models (TODO)
-  evaluate.py      — metrics and walk-forward evaluation (TODO)
+  analysis.py      — EDA: decomposition, patterns, structural breaks
+  plots.py         — plotting helpers (save PNGs to outputs/)
+  forecast/        — Forecaster ABC + NaiveForecaster, SeasonalNaive, MovingAverage
+  evaluate.py      — walk-forward backtest, point + probabilistic metrics
 scripts/
-  make_synthetic.py  — generate synthetic fixture
+  make_synthetic.py  — generate synthetic fixture (official multi-level format)
   run_pipeline.py    — end-to-end pipeline runner
 tests/
   test_resample.py
   test_evaluate.py
+  test_ingest.py
 data/
-  raw/             — real CSV (git-ignored)
+  raw/             — real CSVs (git-ignored)
   synthetic/       — committed fixture
 outputs/           — generated plots and reports (git-ignored)
 ```
+
+## Canonical events model
+
+Every adapter produces a DataFrame with these columns:
+
+| Column | Type | Description |
+|---|---|---|
+| `region` | str | Oblast name |
+| `started_at` | datetime[UTC] | Alert start |
+| `finished_at` | datetime[UTC] | Alert end |
+| `naive` | bool | `True` when end was estimated (volunteer source only) |
+| `source` | str | `"official"` or `"volunteer"` |
+| `geo_level` | str | Always `"oblast"` in the MVP |
 
 ## Honesty note
 
